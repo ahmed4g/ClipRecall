@@ -1,0 +1,104 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <interface name="org.clipboardmanager.Daemon">
+    <method name="SubmitItem">
+      <arg type="a{say}" name="payloads" direction="in"/>
+      <arg type="s" name="source_app" direction="in"/>
+      <arg type="s" name="id" direction="out"/>
+    </method>
+    <method name="GetHistory">
+      <arg type="i" name="offset" direction="in"/>
+      <arg type="i" name="limit" direction="in"/>
+      <arg type="s" name="filter" direction="in"/>
+      <arg type="a(ssstbbs)" name="rows" direction="out"/>
+    </method>
+    <method name="SearchHistory">
+      <arg type="s" name="query" direction="in"/>
+      <arg type="i" name="limit" direction="in"/>
+      <arg type="a(ssstbbs)" name="rows" direction="out"/>
+    </method>
+    <method name="GetItem">
+      <arg type="s" name="id" direction="in"/>
+      <arg type="(ssstbbs)" name="row" direction="out"/>
+    </method>
+    <method name="GetItemContent">
+      <arg type="s" name="id" direction="in"/>
+      <arg type="s" name="mime_type" direction="in"/>
+      <arg type="s" name="out_mime" direction="out"/>
+      <arg type="ay" name="bytes" direction="out"/>
+    </method>
+    <method name="GetItemPayloads">
+      <arg type="s" name="id" direction="in"/>
+      <arg type="a{say}" name="payloads" direction="out"/>
+    </method>
+    <method name="GetThumbnail">
+      <arg type="s" name="id" direction="in"/>
+      <arg type="ay" name="png" direction="out"/>
+    </method>
+    <method name="PinItem">
+      <arg type="s" name="id" direction="in"/>
+      <arg type="b" name="success" direction="out"/>
+    </method>
+    <method name="UnpinItem">
+      <arg type="s" name="id" direction="in"/>
+      <arg type="b" name="success" direction="out"/>
+    </method>
+    <method name="DeleteItem">
+      <arg type="s" name="id" direction="in"/>
+      <arg type="b" name="force" direction="in"/>
+      <arg type="b" name="success" direction="out"/>
+    </method>
+    <method name="ClearHistory">
+      <arg type="b" name="include_pinned" direction="in"/>
+      <arg type="u" name="deleted" direction="out"/>
+    </method>
+    <method name="SetPaused">
+      <arg type="b" name="paused" direction="in"/>
+    </method>
+    <method name="IgnoreNext"/>
+    <method name="GetSettings">
+      <arg type="a{sv}" name="settings" direction="out"/>
+    </method>
+    <method name="SetSetting">
+      <arg type="s" name="key" direction="in"/>
+      <arg type="v" name="value" direction="in"/>
+    </method>
+    <method name="AddExcludedApp">
+      <arg type="s" name="app_id" direction="in"/>
+    </method>
+    <method name="RemoveExcludedApp">
+      <arg type="s" name="app_id" direction="in"/>
+    </method>
+    <method name="ListExcludedApps">
+      <arg type="as" name="app_ids" direction="out"/>
+    </method>
+    <method name="ExportHistory">
+      <arg type="s" name="path" direction="in"/>
+      <arg type="s" name="format" direction="in"/>
+      <arg type="u" name="count" direction="out"/>
+    </method>
+    <method name="ImportHistory">
+      <arg type="s" name="path" direction="in"/>
+      <arg type="s" name="format" direction="in"/>
+      <arg type="u" name="count" direction="out"/>
+    </method>
+    <method name="Health">
+      <arg type="s" name="version" direction="out"/>
+      <arg type="u" name="entries" direction="out"/>
+      <arg type="t" name="db_bytes" direction="out"/>
+      <arg type="b" name="busy" direction="out"/>
+    </method>
+
+    <signal name="ItemAdded">
+      <arg type="(ssstbbs)" name="row"/>
+    </signal>
+    <signal name="ItemRemoved">
+      <arg type="s" name="id"/>
+    </signal>
+    <signal name="HistoryChanged"/>
+    <signal name="StatusChanged">
+      <arg type="s" name="state"/>
+    </signal>
+  </interface>
+</node>

@@ -1,0 +1,30 @@
+[package]
+name = "clipboard-manager-daemon"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ahmed <ahmed@local>"]
+description = "ClipRecall clipboard history daemon for GNOME Wayland"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs"] }
+zbus = { version = "5.5", features = ["tokio"] }
+rusqlite = { version = "0.33", features = ["bundled"] }
+blake3 = "1.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.11", features = ["v4", "fast-rng"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6.0"
+thiserror = "2.0"
+nucleo-matcher = "0.3.1"
+image = "0.25.10"
+base64 = "0.23.1"
+tempfile = "3.17"
+aes-gcm = { version = "0.10.3", features = ["zeroize"] }
+secret-service = { version = "5.2.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
+zeroize = "1.8"
+
+[dev-dependencies]
+futures-lite = "2.6.1"

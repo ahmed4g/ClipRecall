@@ -1,0 +1,7 @@
+{
+  "name": "ClipRecall",
+  "description": "Keyboard-first clipboard history for GNOME Wayland",
+  "uuid": "clipboard-manager@project.local",
+  "shell-version": ["50"],
+  "settings-schema": "org.clipboardmanager"
+}

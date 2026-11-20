@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.clipboardmanager.Daemon
+Exec=/usr/bin/clipboard-manager-daemon
+SystemdService=clipboard-manager-daemon.service

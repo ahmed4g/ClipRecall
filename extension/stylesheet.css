@@ -1,0 +1,100 @@
+/* Popup styles. GNOME Shell loads stylesheet.css from the extension directory
+   automatically (verified in the GNOME Shell 50 sources). */
+
+.clipboard-manager-popup {
+  background-color: rgba(24, 24, 26, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 12px;
+  color: #e6e6e6;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+.clipboard-manager-search {
+  background-color: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  color: #e6e6e6;
+}
+
+.clipboard-manager-scroll {
+  min-height: 300px;
+}
+
+.clipboard-manager-list {
+  spacing: 4px;
+}
+
+.clipboard-manager-row {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  color: #e6e6e6;
+}
+
+.clipboard-manager-row:hover {
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+.clipboard-manager-compact .clipboard-manager-row {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.clipboard-manager-compact .clipboard-manager-list {
+  spacing: 2px;
+}
+
+.clipboard-manager-selected {
+  background-color: rgba(138, 180, 248, 0.22);
+  border-color: rgba(138, 180, 248, 0.5);
+}
+
+.clipboard-manager-badge {
+  min-width: 18px;
+  color: #8ab4f8;
+  font-weight: bold;
+}
+
+.clipboard-manager-type {
+  min-width: 42px;
+  color: #9a9a9a;
+  font-size: 0.85em;
+}
+
+.clipboard-manager-preview {
+  color: #e6e6e6;
+  ellipsis: ellipsis;
+}
+
+.clipboard-manager-thumbnail {
+  margin-right: 8px;
+}
+
+.clipboard-manager-separator {
+  color: #9a9a9a;
+  font-size: 0.85em;
+  padding: 6px 0 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.clipboard-manager-actions,
+.clipboard-manager-clear-confirmation {
+  spacing: 6px;
+  margin-top: 8px;
+}
+
+.clipboard-manager-action {
+  padding: 4px 8px;
+}
+
+.clipboard-manager-action-status {
+  padding-top: 4px;
+  color: #f4c76b;
+}
+
+.clipboard-manager-indicator:paused .clipboard-manager-indicator-icon {
+  color: #f4c76b;
+}

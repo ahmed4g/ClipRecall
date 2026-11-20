@@ -1,0 +1,15 @@
+[Unit]
+Description=ClipRecall clipboard history daemon
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.clipboardmanager.Daemon
+ExecStart=/usr/bin/clipboard-manager-daemon
+Restart=on-failure
+RestartSec=2
+Slice=app.slice
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.clipboardmanager" path="/org/clipboardmanager/">
+    <key name="direct-paste-all-apps" type="b">
+      <default>false</default>
+      <summary>Send Ctrl+V for direct paste in any app</summary>
+    </key>
+    <key name="compact-rows" type="b">
+      <default>false</default>
+      <summary>Use compact clipboard history rows</summary>
+    </key>
+    <key name="thumbnail-display-size" type="i">
+      <range min="16" max="64"/>
+      <default>32</default>
+      <summary>Size of image thumbnails in the popup</summary>
+    </key>
+    <!-- The key name must match the name passed to global.display.add_keybinding(),
+         and mutter reads it as a string array (g_settings_get_strv), so the type is
+         "as" like org.gnome.shell.keybindings. Verified against the Phase 0 spike,
+         whose keybinding fired with a type "as" key. -->
+    <key name="open-popup" type="as">
+      <default>['&lt;Super&gt;V']</default>
+      <summary>Global shortcut that opens the clipboard popup</summary>
+      <description>Accelerator string registered through Main.wm.addKeybinding, which is what puts it in ShellWM's keybinding allow list.</description>
+    </key>
+  </schema>
+</schemalist>
