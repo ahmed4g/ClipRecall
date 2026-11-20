@@ -75,3 +75,8 @@ encryption at rest using GNOME Keyring. See [Security and privacy](docs/security
 ## License
 
 ClipRecall is distributed under the [MIT license](LICENSE). Third-party dependencies retain their own licenses.
+
+## Acknowledgments
+
+ClipRecall was developed by Ahmed with assistance from OpenAI Codex for implementation,
+debugging, testing, and documentation. Its clipboard history workflow was inspired by Maccy.
