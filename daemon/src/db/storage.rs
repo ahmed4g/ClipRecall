@@ -467,10 +467,15 @@ pub fn prune(conn: &Connection, config: &Config) -> Result<Vec<String>, DaemonEr
     let mut removed = Vec::new();
 
     {
-        let mut stmt = conn.prepare("SELECT id FROM items WHERE pinned = 0 AND created_at < ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT id FROM items WHERE pinned = 0 AND COALESCE(last_used_at, created_at) < ?1",
+        )?;
         let ids = stmt
             .query_map(params![cutoff], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<String>, _>>()?;
+        for id in &ids {
+            conn.execute("DELETE FROM items WHERE id = ?1", params![id])?;
+        }
         removed.extend(ids);
     }
 
@@ -482,6 +487,9 @@ pub fn prune(conn: &Connection, config: &Config) -> Result<Vec<String>, DaemonEr
         let ids = stmt
             .query_map(params![config.max_entries], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<String>, _>>()?;
+        for id in &ids {
+            conn.execute("DELETE FROM items WHERE id = ?1", params![id])?;
+        }
         removed.extend(ids);
     }
 
@@ -489,9 +497,6 @@ pub fn prune(conn: &Connection, config: &Config) -> Result<Vec<String>, DaemonEr
         return Ok(removed);
     }
 
-    for id in &removed {
-        conn.execute("DELETE FROM items WHERE id = ?1", params![id])?;
-    }
     info!("Pruned {} entries", removed.len());
     Ok(removed)
 }

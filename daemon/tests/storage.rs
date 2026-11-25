@@ -554,3 +554,33 @@ fn excluded_app_list_round_trips() {
     storage::remove_excluded_app(&conn, "org.example.Vault").unwrap();
     assert_eq!(storage::list_excluded_apps(&conn).unwrap(), vec!["org.example.Ide".to_string()]);
 }
+
+#[test]
+fn age_prune_respects_last_used_at_and_does_not_duplicate_removed_ids() {
+    let db = Database::open_in_memory().expect("in-memory db");
+    let conn = db.connection();
+    let conn = conn.lock().unwrap();
+    let cfg = Config { max_entries: 1, retention_days: 30, ..Config::defaults() };
+
+    let reused = stored(&conn, &payloads(&[("text/plain", b"old but reused")]), "app", &Config::defaults());
+    let stale = stored(&conn, &payloads(&[("text/plain", b"old and stale")]), "app", &Config::defaults());
+
+    // Backdate both items past the 30-day retention window.
+    let expired = (storage::now_millis() as i64) - 31 * 86400 * 1000;
+    conn.execute(
+        "UPDATE items SET created_at = ?1, last_used_at = NULL WHERE id IN (?2, ?3)",
+        rusqlite::params![expired, reused.id, stale.id],
+    )
+    .unwrap();
+
+    // Re-copying `reused` bumps `last_used_at` to now; it must survive age pruning.
+    let again = storage::insert(&conn, &payloads(&[("text/plain", b"old but reused")]), "app", &cfg).unwrap();
+    assert!(matches!(again, InsertOutcome::Stored { dedup_hit: true, .. }));
+
+    // `stale` matches both the age cutoff and `max_entries: 1`; it must be pruned once.
+    let removed = storage::prune(&conn, &cfg).unwrap();
+    assert_eq!(removed, vec![stale.id.clone()]);
+
+    assert!(storage::get_item(&conn, &reused.id).unwrap().is_some(), "recently reused item must survive age prune");
+    assert!(storage::get_item(&conn, &stale.id).unwrap().is_none(), "stale item must be pruned");
+}
