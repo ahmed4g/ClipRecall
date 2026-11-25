@@ -224,3 +224,31 @@ async fn a_client_that_subscribes_after_an_event_does_not_get_it_replayed() {
 
     harness.stop();
 }
+
+#[tokio::test]
+async fn filtered_search_and_payload_restore_update_recency() {
+    let db = Database::open_in_memory().unwrap();
+    let mut harness = match common::Harness::start(db.clone()).await {
+        Some(harness) => harness,
+        None => return,
+    };
+    let proxy = harness.proxy().await;
+    let id: String = common::call(&proxy, "SubmitItem",
+        &(payloads(&[("text/plain", b"needle")]), "test")).await;
+    let rows: Vec<HistoryRow> = common::call(&proxy, "SearchFilteredHistory",
+        &("needle", 1i32, "text")).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, id);
+    let rows: Vec<HistoryRow> = common::call(&proxy, "SearchFilteredHistory",
+        &("needle", 1i32, "image")).await;
+    assert!(rows.is_empty());
+    let conn = db.connection();
+    conn.lock().unwrap().execute("UPDATE items SET last_used_at = 1 WHERE id = ?1", [&id]).unwrap();
+    let content: (String, Vec<u8>) = common::call(&proxy, "GetItemContent", &(&id, "text/plain")).await;
+    assert_eq!(content.1, b"needle");
+    assert!(db.get_item(&id).unwrap().unwrap().last_used_at.unwrap() > 1);
+    conn.lock().unwrap().execute("UPDATE items SET last_used_at = 1 WHERE id = ?1", [&id]).unwrap();
+    let _: PayloadsMap = common::call(&proxy, "GetItemPayloads", &(&id,)).await;
+    assert!(db.get_item(&id).unwrap().unwrap().last_used_at.unwrap() > 1);
+    harness.stop();
+}

@@ -62,9 +62,15 @@ export default class ClipboardManagerPreferences extends ExtensionPreferences {
         this._shortcutChangedId = this._settings.connect('changed::open-popup', update);
         shortcut.connect('apply', () => this._saveShortcut(shortcut));
         shortcutGroup.add(shortcut);
+        const autoPaste = new Adw.SwitchRow({
+            title: 'Paste automatically on Enter or 1–9',
+            subtitle: 'Selecting an item also sends Ctrl+V to the original app.',
+        });
+        shortcutGroup.add(autoPaste);
+        this._settings.bind('auto-paste', autoPaste, 'active', Gio.SettingsBindFlags.DEFAULT);
         const directPaste = new Adw.SwitchRow({
             title: 'Direct paste in all apps',
-            subtitle: 'Alt+Enter sends Ctrl+V. Use this with apps that paste with Ctrl+V.',
+            subtitle: 'Allow automatic paste and Alt+Enter in any app that accepts Ctrl+V.',
         });
         shortcutGroup.add(directPaste);
         this._settings.bind('direct-paste-all-apps', directPaste, 'active', Gio.SettingsBindFlags.DEFAULT);
@@ -124,6 +130,11 @@ export default class ClipboardManagerPreferences extends ExtensionPreferences {
             subtitle: 'Uses sensitive-content hints from apps. Turning this off can save passwords.',
         });
         this._bindRemote(group, filter, 'filter_passwords', 'active', 'b');
+        const entropy = new Adw.SwitchRow({
+            title: 'Ignore text that resembles a secret',
+            subtitle: 'Entropy filtering may also exclude ordinary random-looking text.',
+        });
+        this._bindRemote(group, entropy, 'filter_entropy', 'active', 'b');
         const encryption = new Adw.SwitchRow({
             title: 'Encrypt history at rest',
             subtitle: 'Protects saved copies and previews with GNOME Keyring. Image thumbnails are hidden while enabled.',
@@ -157,7 +168,11 @@ export default class ClipboardManagerPreferences extends ExtensionPreferences {
         const exportGroup = this._group(page, 'Export History', 'Exports may contain sensitive clipboard content.');
         this._addButton(exportGroup, 'JSON with clipboard contents', 'Save…', () => this._export('json'));
         this._addButton(exportGroup, 'CSV with previews and metadata', 'Save…', () => this._export('csv'));
-        this._remoteWidgets.push(cleanup, exportGroup);
+        const importGroup = this._group(page, 'Import History',
+            'JSON restores clipboard contents. CSV restores preview text only.');
+        this._addButton(importGroup, 'Import JSON backup', 'Open…', () => this._import('json'));
+        this._addButton(importGroup, 'Import CSV previews', 'Open…', () => this._import('csv'));
+        this._remoteWidgets.push(cleanup, exportGroup, importGroup);
     }
 
     _addButton(group, title, label, onClick) {
@@ -265,6 +280,28 @@ export default class ClipboardManagerPreferences extends ExtensionPreferences {
             }
             this._bridge.exportHistory(path, format, count => {
                 this._toast(count === null ? 'Could not export history.' : `Exported entries: ${count}`);
+            });
+        });
+    }
+
+    _import(format) {
+        const filter = new Gtk.FileFilter({name: format.toUpperCase()});
+        filter.add_pattern(`*.${format}`);
+        const filters = new Gio.ListStore({item_type: Gtk.FileFilter});
+        filters.append(filter);
+        const dialog = new Gtk.FileDialog({title: 'Import Clipboard History', filters});
+        dialog.open(this._window, this._cancellable, (source, result) => {
+            let path;
+            try {
+                path = source.open_finish(result).get_path();
+            } catch (error) {
+                if (!error.matches(Gtk.DialogError, Gtk.DialogError.DISMISSED))
+                    this._toast('Could not choose an import file.');
+                return;
+            }
+            if (!path || !this._window || !this._ready) return;
+            this._bridge.importHistory(path, format, count => {
+                this._toast(count === null ? 'Could not import history.' : `Imported entries: ${count}`);
             });
         });
     }

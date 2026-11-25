@@ -6,7 +6,8 @@ use crate::thumbnails::ThumbnailWorker;
 use crate::types::{ApiError, ContentRow, DaemonError, HealthRow, HistoryRow, PayloadsMap};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use futures_lite::StreamExt;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::info;
@@ -20,9 +21,21 @@ const KEYRING_TIMEOUT: Duration = Duration::from_secs(5);
 struct ActiveKey {
     key: Arc<HistoryKey>,
     item: zbus::Proxy<'static>,
+    valid: Arc<AtomicBool>,
+    gate: Arc<std::sync::Mutex<()>>,
+    _watcher: KeyWatcher,
+}
+
+struct KeyWatcher(tokio::task::JoinHandle<()>);
+
+impl Drop for KeyWatcher {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 pub struct DaemonService {
+    connection: Arc<OnceLock<zbus::Connection>>,
     db: Database,
     thumbnails: ThumbnailWorker,
     pause_updates: Mutex<()>,
@@ -33,6 +46,7 @@ pub struct DaemonService {
 impl DaemonService {
     pub fn new(db: Database, thumbnails: ThumbnailWorker) -> Self {
         Self {
+            connection: Arc::new(OnceLock::new()),
             db,
             thumbnails,
             pause_updates: Mutex::new(()),
@@ -41,17 +55,84 @@ impl DaemonService {
         }
     }
 
+    pub fn connection_handle(&self) -> Arc<OnceLock<zbus::Connection>> {
+        self.connection.clone()
+    }
+
     async fn fetch_key(&self, allow_create: bool) -> Result<ActiveKey, ApiError> {
         let id = self.db.key_id_async(allow_create).await?;
-        let (key, item) = tokio::time::timeout(KEYRING_TIMEOUT, keyring_key(&id, allow_create))
-            .await.map_err(|_| DaemonError::Encrypted)??;
-        Ok(ActiveKey { key: Arc::new(key), item })
+        if self.connection.get().is_none() {
+            let bus = zbus::Connection::session().await.map_err(Self::transport)?;
+            let _ = self.connection.set(bus);
+        }
+        let connection = self.connection.get().unwrap();
+        // Subscribe before loading the secret so a concurrent lock invalidates the result.
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender("org.freedesktop.secrets").map_err(Self::transport)?
+            .build();
+        let mut signals = zbus::MessageStream::for_match_rule(rule, connection, Some(64))
+            .await.map_err(Self::transport)?;
+        let owner = zbus::fdo::DBusProxy::new(connection).await.map_err(Self::transport)?;
+        let mut owners = owner.receive_name_owner_changed().await.map_err(Self::transport)?;
+        let valid = Arc::new(AtomicBool::new(true));
+        let watcher_valid = valid.clone();
+        let gate = Arc::new(std::sync::Mutex::new(()));
+        let watcher_gate = gate.clone();
+        let db = self.db.clone();
+        let watcher = tokio::spawn(async move {
+            loop {
+                let invalidate = tokio::select! {
+                    event = signals.next() => match event {
+                        Some(Ok(message)) => match message.header().member().map(|member| member.as_str()) {
+                            Some("PropertiesChanged") => match message.body().deserialize::<(
+                                String, HashMap<String, OwnedValue>, Vec<String>
+                            )>() {
+                                Ok((_, changed, invalidated)) =>
+                                    changed.get("Locked").is_some_and(|value| bool::try_from(value).unwrap_or(true))
+                                        || invalidated.iter().any(|name| name == "Locked"),
+                                Err(_) => true,
+                            },
+                            Some("ItemDeleted" | "CollectionDeleted") => true,
+                            _ => false,
+                        },
+                        _ => true,
+                    },
+                    event = owners.next() => match event {
+                        Some(event) => event.args().map_or(true, |args| args.name().as_str() == "org.freedesktop.secrets"),
+                        None => true,
+                    },
+                };
+                if invalidate {
+                    let _gate = watcher_gate.lock().unwrap();
+                    watcher_valid.store(false, Ordering::SeqCst);
+                    db.cache_history_key(None);
+                    break;
+                }
+            }
+        });
+        let watcher = KeyWatcher(watcher);
+        let loaded = tokio::time::timeout(KEYRING_TIMEOUT, keyring_key(connection, &id, allow_create))
+            .await;
+        let (key, item) = match loaded {
+            Ok(Ok(loaded)) => loaded,
+            _ => {
+                return Err(DaemonError::Encrypted.into());
+            }
+        };
+        if !matches!(item.get_property::<bool>("Locked").await, Ok(false)) ||
+            !valid.load(Ordering::SeqCst) {
+            return Err(DaemonError::Encrypted.into());
+        }
+        Ok(ActiveKey { key: Arc::new(key), item, valid, gate, _watcher: watcher })
     }
 
     async fn active_key(&self, active: &mut Option<ActiveKey>) -> Result<Arc<HistoryKey>, ApiError> {
         if let Some(cached) = active {
-            if matches!(tokio::time::timeout(KEYRING_TIMEOUT, cached.item.get_property::<bool>("Locked")).await,
-                Ok(Ok(false))) {
+            let gate = cached.gate.clone();
+            let _guard = gate.lock().unwrap();
+            if cached.valid.load(Ordering::SeqCst) &&
+                matches!(cached.item.cached_property::<bool>("Locked"), Ok(Some(false))) {
                 return Ok(cached.key.clone());
             }
             *active = None;
@@ -60,6 +141,11 @@ impl DaemonService {
         }
 
         let loaded = self.fetch_key(false).await?;
+        let gate = loaded.gate.clone();
+        let _guard = gate.lock().unwrap();
+        if !loaded.valid.load(Ordering::SeqCst) {
+            return Err(DaemonError::Encrypted.into());
+        }
         self.db.cache_history_key(Some(loaded.key.clone()));
         let key = loaded.key.clone();
         *active = Some(loaded);
@@ -180,13 +266,10 @@ impl DaemonService {
             InsertOutcome::Skipped(reason) => return Err(ApiError::Filtered(format!("{reason:?}"))),
         };
 
+        self.thumbnails.prune_cached().await.map_err(ApiError::from)?;
+
         if !item.encrypted && item.primary_mime.starts_with("image/") {
-            let content = self
-                .db
-                .get_content_async(item.id.clone(), item.primary_mime.clone())
-                .await
-                .map_err(ApiError::from)?;
-            self.thumbnails.queue(&item.id, &content.1);
+            self.thumbnails.queue(&item.id);
         }
 
         emitter
@@ -214,6 +297,12 @@ impl DaemonService {
             .map_err(ApiError::from)
     }
 
+    /// Search within one history type before applying the result limit.
+    async fn search_filtered_history(&self, query: String, limit: i32, filter: String) -> Result<Vec<HistoryRow>, ApiError> {
+        self.check_keyring().await?;
+        self.db.search_filtered_async(query, limit as i64, filter).await.map_err(ApiError::from)
+    }
+
     /// Retrieve metadata for a single item.
     async fn get_item(&self, id: String) -> Result<HistoryRow, ApiError> {
         let _ = self.check_keyring().await;
@@ -229,16 +318,17 @@ impl DaemonService {
     /// Retrieve binary/text payload for paste-back.
     async fn get_item_content(&self, id: String, mime_type: String) -> Result<ContentRow, ApiError> {
         self.check_keyring().await?;
-        self.db
-            .get_content_async(id, mime_type)
-            .await
-            .map_err(ApiError::from)
+        let content = self.db.get_content_async(id.clone(), mime_type).await?;
+        self.db.touch_async(id).await?;
+        Ok(content)
     }
 
     /// Retrieve all multi-MIME payloads for an item.
     async fn get_item_payloads(&self, id: String) -> Result<PayloadsMap, ApiError> {
         self.check_keyring().await?;
-        self.db.get_payloads_async(id).await.map_err(ApiError::from)
+        let payloads = self.db.get_payloads_async(id.clone()).await?;
+        self.db.touch_async(id).await?;
+        Ok(payloads)
     }
 
     /// Pre-generated thumbnail PNG, rendered on the worker if it is not cached yet.
@@ -296,6 +386,7 @@ impl DaemonService {
     ) -> Result<bool, ApiError> {
         let success = self.db.delete_item_async(id.clone(), force).await.map_err(ApiError::from)?;
         if success {
+            self.thumbnails.prune_cached().await.map_err(ApiError::from)?;
             emitter.item_removed(id).await.map_err(Self::transport)?;
             emitter.history_changed().await.map_err(Self::transport)?;
         }

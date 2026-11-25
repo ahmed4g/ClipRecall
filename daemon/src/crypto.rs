@@ -58,11 +58,11 @@ fn aad(id: &str, field: &str) -> Vec<u8> {
 }
 
 pub(crate) async fn keyring_key(
+    connection: &zbus::Connection,
     id: &str,
     create: bool,
 ) -> Result<(HistoryKey, zbus::Proxy<'static>), DaemonError> {
     let locked = |_| DaemonError::Encrypted;
-    let connection = zbus::Connection::session().await.map_err(locked)?;
     let service = SecretService::connect_with_existing(EncryptionType::Dh, connection.clone())
         .await.map_err(|_| DaemonError::Encrypted)?;
     let attributes = HashMap::from([("application", "org.clipboardmanager.Daemon"), ("history-key-id", id)]);
@@ -92,7 +92,7 @@ pub(crate) async fn keyring_key(
         .destination("org.freedesktop.secrets").map_err(locked)?
         .path(item.0).map_err(locked)?
         .interface("org.freedesktop.Secret.Item").map_err(locked)?
-        .cache_properties(zbus::proxy::CacheProperties::No)
+        .cache_properties(zbus::proxy::CacheProperties::Yes)
         .build().await.map_err(locked)?;
     Ok((HistoryKey(key), proxy))
 }

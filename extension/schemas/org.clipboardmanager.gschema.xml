@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
   <schema id="org.clipboardmanager" path="/org/clipboardmanager/">
+    <key name="auto-paste" type="b">
+      <default>false</default>
+      <summary>Paste automatically when selecting a history item</summary>
+    </key>
     <key name="direct-paste-all-apps" type="b">
       <default>false</default>
       <summary>Send Ctrl+V for direct paste in any app</summary>

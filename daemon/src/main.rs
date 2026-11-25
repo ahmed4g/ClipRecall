@@ -50,8 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Database initialized successfully at {}", db_path.display());
 
     // 3. Thumbnail worker: decoding and resizing never run on the reactor thread.
-    let max_px = db.config().thumbnail_max_px.max(1) as u32;
-    let (thumbnails, worker) = ThumbnailWorker::new(db.clone(), cache_dir, max_px);
+    let (thumbnails, worker) = ThumbnailWorker::new(db.clone(), cache_dir);
     let worker_control = thumbnails.clone();
     info!("Thumbnail worker started, cache at {}", thumbnails.cache_dir().display());
 
@@ -59,9 +58,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    instance lock: a second start while the systemd user service is active exits
     //    cleanly instead of serving a second copy of the object.
     info!("Registering D-Bus service at {BUS_NAME}...");
+    let service = DaemonService::new(db, thumbnails);
+    let service_connection = service.connection_handle();
     let conn = match zbus::connection::Builder::session()?
         .name(BUS_NAME)?
-        .serve_at(OBJECT_PATH, DaemonService::new(db, thumbnails))?
+        .serve_at(OBJECT_PATH, service)?
         .build()
         .await
     {
@@ -74,6 +75,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(err) => return Err(err.into()),
     };
+
+    let _ = service_connection.set(conn.clone());
 
     info!("D-Bus service listening on session bus at {OBJECT_PATH}");
 

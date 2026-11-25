@@ -514,7 +514,18 @@ pub(crate) fn list_protected(
     conn: &Connection, offset: i64, limit: i64, filter: &str, key: Option<&HistoryKey>,
 ) -> Result<Vec<HistoryRow>, DaemonError> {
     let limit = clamp_limit(limit);
-    let where_clause = match filter {
+    let where_clause = filter_clause(filter)?;
+
+    let sql = format!(
+        "SELECT {ROW_COLUMNS}, private_metadata FROM items{where_clause}
+         ORDER BY pinned DESC, COALESCE(last_used_at, created_at) DESC, rowid DESC LIMIT ?1 OFFSET ?2"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    private_rows(&mut stmt, params![limit, offset.max(0)], key)
+}
+
+fn filter_clause(filter: &str) -> Result<String, DaemonError> {
+    Ok(match filter {
         "" | "all" => String::new(),
         // The type filters are mutually exclusive: `text/uri-list` is a text MIME by prefix,
         // but a URI entry belongs to the `file` filter, so it must not also show up as text.
@@ -523,14 +534,22 @@ pub(crate) fn list_protected(
         "file" => " WHERE primary_mime IN ('text/uri-list', 'text/x-uri', 'x-special/gnome-copied-files')".to_string(),
         "pinned" => " WHERE pinned = 1".to_string(),
         other => return Err(DaemonError::InvalidArgument(format!("unknown filter: {other}"))),
-    };
+    })
+}
 
-    let sql = format!(
+pub(crate) fn search_filtered(
+    conn: &Connection, query: &str, limit: i64, filter: &str, key: Option<&HistoryKey>,
+) -> Result<Vec<HistoryRow>, DaemonError> {
+    let where_clause = filter_clause(filter)?;
+    let mut stmt = conn.prepare(&format!(
         "SELECT {ROW_COLUMNS}, private_metadata FROM items{where_clause}
-         ORDER BY pinned DESC, COALESCE(last_used_at, created_at) DESC, rowid DESC LIMIT ?1 OFFSET ?2"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    private_rows(&mut stmt, params![limit, offset.max(0)], key)
+         ORDER BY pinned DESC, COALESCE(last_used_at, created_at) DESC, rowid DESC"
+    ))?;
+    let candidates = private_rows(&mut stmt, [], key)?;
+    if query.trim().is_empty() {
+        return Ok(candidates.into_iter().take(clamp_limit(limit) as usize).collect());
+    }
+    Ok(score_candidates(candidates, query.trim(), clamp_limit(limit)))
 }
 
 fn clamp_limit(limit: i64) -> i64 {
@@ -874,6 +893,26 @@ mod tests {
         assert!(!looks_like_token(prose));
         assert!(!looks_like_token(b"https://example.com/path/to/file"));
         assert!(!looks_like_token(b"short a1b2"));
+    }
+
+    #[test]
+    fn filtered_search_limits_after_type_selection() {
+        let conn = conn();
+        for (mime, bytes) in [
+            ("text/plain", b"needle".as_slice()),
+            ("text/uri-list", b"file:///needle".as_slice()),
+            ("image/png", b"image needle".as_slice()),
+        ] {
+            insert(&conn, &payloads(&[(mime, bytes)]), "test", &Config::defaults()).unwrap();
+        }
+        let files = search_filtered(&conn, "needle", 1, "file", None).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].1, "text/uri-list");
+        let text = search_filtered(&conn, "needle", 1, "text", None).unwrap();
+        assert_eq!(text.len(), 1);
+        assert_eq!(text[0].1, "text/plain");
+        assert!(search_filtered(&conn, "needle", 10, "pinned", None).unwrap().is_empty());
+        assert!(search_filtered(&conn, "needle", 10, "unknown", None).is_err());
     }
 
     #[test]

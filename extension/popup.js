@@ -32,6 +32,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Debouncer} from './filters.js';
 import * as popupLogic from './popupLogic.js';
 
+const FILTERS = ['all', 'text', 'image', 'file', 'pinned'];
 const POPUP_WIDTH = 420;
 const POPUP_HEIGHT = 480;
 
@@ -57,6 +58,8 @@ export class Popup {
         this._onSelect = onSelect || (() => {});
         this._onTiming = onTiming || (() => {});
 
+        this._thumbnailIcons = new Map();
+        this._filter = 'all';
         this._rows = [];
         this._displayRows = [];
         this._rowWidgets = [];
@@ -115,6 +118,8 @@ export class Popup {
         });
 
         this._actor.add_child(this._entry);
+        this._filterLabel = new St.Label({text: 'All · Tab to change filter'});
+        this._actor.add_child(this._filterLabel);
         this._actor.add_child(this._scroll);
         this._buildActions();
 
@@ -366,6 +371,7 @@ export class Popup {
 
         const [px, py] = global.get_pointer();
         const work = this._workAreaForPoint(anchor?.x ?? px, anchor?.y ?? py);
+        if (!work) return;
         const x = anchor ? anchor.x - POPUP_WIDTH / 2 : px;
         const pos = popupLogic.clampToWorkArea(x, anchor?.y ?? py, POPUP_WIDTH, POPUP_HEIGHT, work);
         this._actor.set_position(pos.x, pos.y);
@@ -420,6 +426,7 @@ export class Popup {
 
     destroy() {
         this.close();
+        this._thumbnailIcons.clear();
         if (this._actor) this._actor.destroy();
     }
 
@@ -427,7 +434,7 @@ export class Popup {
         const monitor = Main.layoutManager.monitors.find(
             (m) => x >= m.x && x < m.x + m.width && y >= m.y && y < m.y + m.height)
             || Main.layoutManager.primaryMonitor;
-        return Main.layoutManager.getWorkAreaForMonitor(monitor.index);
+        return monitor ? Main.layoutManager.getWorkAreaForMonitor(monitor.index) : null;
     }
 
     _containsPoint(actor, x, y) {
@@ -477,6 +484,19 @@ export class Popup {
             return Clutter.EVENT_PROPAGATE;
         }
         const modifiers = event.get_state() & SHORTCUT_MODIFIERS;
+        if (keyval === Clutter.KEY_Tab || keyval === Clutter.KEY_ISO_Left_Tab) {
+            const backwards = (modifiers & Clutter.ModifierType.SHIFT_MASK) !== 0;
+            if (modifiers & ~Clutter.ModifierType.SHIFT_MASK) return Clutter.EVENT_PROPAGATE;
+            const index = FILTERS.indexOf(this._filter);
+            this._filter = FILTERS[(index + (backwards ? -1 : 1) + FILTERS.length) % FILTERS.length];
+            this._filterLabel.text = `${this._filter[0].toUpperCase()}${this._filter.slice(1)} · Tab to change filter`;
+            this._nav = new popupLogic.Navigator(0);
+            this._clearRows();
+            this._debouncer.cancel();
+            this._query(this._entry.get_text());
+            this._entry.grab_key_focus();
+            return Clutter.EVENT_STOP;
+        }
         const repeat = (event.get_flags() & Clutter.EventFlags.FLAG_REPEATED) !== 0;
         if (keyval === KEY.Return || keyval === KEY.KP_Enter) {
             // Handle Enter before Clutter.Text consumes it. A focused button handles its own Enter.
@@ -572,8 +592,9 @@ export class Popup {
         }
         const pager = this._pager;
         const request = ++this._searchRequests;
-        const isCurrent = () => this._open && this._pager === pager && this._searchRequests === request;
-        this._bridge.search(query, popupLogic.MAX_VISIBLE, (tuples) => {
+        const filter = this._filter;
+        const isCurrent = () => this._open && this._pager === pager && this._searchRequests === request && this._filter === filter;
+        this._bridge.searchFiltered(query, popupLogic.MAX_VISIBLE, this._filter, (tuples) => {
             if (!isCurrent()) return;
             this._rows = tuples.map(popupLogic.rowFromTuple);
             this._render(started, query);
@@ -586,7 +607,7 @@ export class Popup {
         const started = GLib.get_monotonic_time();
         const pager = this._pager;
         const isCurrent = () => this._open && this._pager === pager && this._queryText === '';
-        this._bridge.getHistory(request.offset, request.limit, 'all', (tuples) => {
+        this._bridge.getHistory(request.offset, request.limit, this._filter, (tuples) => {
             if (!isCurrent()) return;
             pager.append(tuples.map(popupLogic.rowFromTuple));
             this._render(started, '');
@@ -641,9 +662,19 @@ export class Popup {
                     this._thumbnails.push(icon);
                     box.add_child(icon);
                     if (row.hasThumbnail) {
-                        this._bridge.getThumbnail(row.id, png => {
-                            if (this._rowWidgets === widgets) icon.set_gicon(Gio.BytesIcon.new(png));
-                        });
+                        const cached = this._thumbnailIcons.get(row.id);
+                        if (cached) {
+                            icon.set_gicon(cached);
+                        } else {
+                            this._bridge.getThumbnail(row.id, png => {
+                                if (!this._open || this._rowWidgets !== widgets) return;
+                                const bytesIcon = Gio.BytesIcon.new(png);
+                                this._thumbnailIcons.set(row.id, bytesIcon);
+                                if (this._thumbnailIcons.size > 64)
+                                    this._thumbnailIcons.delete(this._thumbnailIcons.keys().next().value);
+                                icon.set_gicon(bytesIcon);
+                            });
+                        }
                     }
                 }
                 box.add_child(new St.Label({
@@ -720,6 +751,7 @@ export class Popup {
         // grab a clipboard read from another client does not complete (measured 2026-11-06:
         // wl-paste and wl-copy hung until the popup closed), so the grab has to be released
         // first.
+        pasteTarget ??= this._settings.get_boolean('auto-paste') ? this._pasteTarget : null;
         this.close();
         this._onSelect(row, richText, pasteTarget);
     }

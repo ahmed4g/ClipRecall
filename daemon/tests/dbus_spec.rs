@@ -94,6 +94,7 @@ fn expected() -> (Vec<Method>, Vec<Signal>) {
     let methods = vec![
         Method { name: "SubmitItem".into(), ins: vec![payloads.clone(), "s".into()], outs: vec!["s".into()] },
         Method { name: "GetHistory".into(), ins: vec!["i".into(), "i".into(), "s".into()], outs: vec![format!("a{row}")] },
+        Method { name: "SearchFilteredHistory".into(), ins: vec!["s".into(), "i".into(), "s".into()], outs: vec![format!("a{row}")] },
         Method { name: "SearchHistory".into(), ins: vec!["s".into(), "i".into()], outs: vec![format!("a{row}")] },
         Method { name: "GetItem".into(), ins: vec!["s".into()], outs: vec![row.clone()] },
         Method { name: "GetItemContent".into(), ins: vec!["s".into(), "s".into()], outs: vec!["s".into(), "ay".into()] },
@@ -185,7 +186,7 @@ async fn generated_introspection_matches_the_spec_xml() {
 
     let db = Database::open_in_memory().expect("in-memory db");
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let (thumbnails, _worker) = ThumbnailWorker::new(db.clone(), dir.path().to_path_buf(), 200);
+    let (thumbnails, _worker) = ThumbnailWorker::new(db.clone(), dir.path().to_path_buf());
     let service = DaemonService::new(db, thumbnails);
     let conn = zbus::connection::Builder::address(address.as_str())
         .expect("bus address")

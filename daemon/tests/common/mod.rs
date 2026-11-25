@@ -68,7 +68,7 @@ impl Harness {
         }
 
         let dir = TempDir::new().expect("temp dir");
-        let (thumbnails, worker) = ThumbnailWorker::new(db.clone(), dir.path().to_path_buf(), 200);
+        let (thumbnails, worker) = ThumbnailWorker::new(db.clone(), dir.path().to_path_buf());
 
         let server = zbus::connection::Builder::address(address.as_str())
             .expect("bus address")

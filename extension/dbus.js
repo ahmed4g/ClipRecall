@@ -16,6 +16,7 @@
 //   nothing on such a proxy, and setup() is not exposed to gjs). The proxy is therefore
 //   built with new_for_bus_sync, which sets it up and delivers signals even when the
 //   name has no owner at construction time.
+// - Proxy initialization is asynchronous so daemon activation cannot block Shell.
 // - The proxy signals available are `g-signal` and `g-properties-changed`.
 //   `g-name-appeared` and `g-name-lost` do not exist on this GLib, so name
 //   appearance is tracked with Gio.bus_watch_name_on_connection, which also fires
@@ -53,16 +54,32 @@ export class DaemonBridge {
         this._daemonGeneration = 0;
         this.connected = false;
 
-        this._proxy = Gio.DBusProxy.new_for_bus_sync(
-            Gio.BusType.SESSION,
-            Gio.DBusProxyFlags.NONE,
-            null,
-            DAEMON_NAME,
-            DAEMON_PATH,
-            DAEMON_IFACE,
-            null
-        );
+        this._proxy = null;
+        this._watcherId = null;
+        this._initializing = new Gio.Cancellable();
+        Gio.DBusProxy.new_for_bus(
+            Gio.BusType.SESSION, Gio.DBusProxyFlags.NONE, null,
+            DAEMON_NAME, DAEMON_PATH, DAEMON_IFACE, this._initializing,
+            (_source, result) => {
+                let proxy;
+                try {
+                    proxy = Gio.DBusProxy.new_for_bus_finish(result);
+                } catch (err) {
+                    if (!this._initializing.is_cancelled())
+                        console.error(`[clipboard-manager] proxy initialization failed: ${err.message}`);
+                    return;
+                }
+                if (this._initializing.is_cancelled()) return;
+                this._proxy = proxy;
+                this._watchDaemon();
+            });
 
+        // The watcher reports the current ownership state on the first loop
+        // iteration, so `connected` is not trustworthy synchronously; callers that
+        // must know before the loop turns should not depend on it.
+    }
+
+    _watchDaemon() {
         this._signalId = this._proxy.connect('g-signal', (proxy, sender, signalName, params) => {
             if (signalName === 'StatusChanged') this._handleStatusChanged(params.deepUnpack()[0]);
         });
@@ -88,9 +105,6 @@ export class DaemonBridge {
             }
         );
 
-        // The watcher reports the current ownership state on the first loop
-        // iteration, so `connected` is not trustworthy synchronously; callers that
-        // must know before the loop turns should not depend on it.
     }
 
     _handleStatusChanged(state) {
@@ -167,6 +181,15 @@ export class DaemonBridge {
         this._call('SearchHistory', new GLib.Variant('(si)', [query, limit]), (reply) => {
             if (onRows) onRows(reply.deepUnpack()[0]);
         }, onError);
+    }
+
+    searchFiltered(query, limit, filter, onRows, onError) {
+        if (filter === 'all') {
+            this.search(query, limit, onRows, onError);
+            return;
+        }
+        this._call('SearchFilteredHistory', new GLib.Variant('(sis)', [query, limit, filter]),
+            reply => onRows(reply.deepUnpack()[0]), onError);
     }
 
     /// Fetch one payload for paste-back. Empty mime means the primary.
@@ -246,7 +269,17 @@ export class DaemonBridge {
         }, () => onExported?.(null));
     }
 
+    importHistory(path, format, onImported) {
+        this._call('ImportHistory', new GLib.Variant('(ss)', [path, format]), reply => {
+            onImported?.(reply.deepUnpack()[0]);
+        }, () => onImported?.(null), 600_000);
+    }
+
     _call(method, body, onReply, onError, timeout = -1) {
+        if (!this._proxy) {
+            onError?.();
+            return;
+        }
         const generation = this._daemonGeneration;
         this._proxy.call(method, body, Gio.DBusCallFlags.NONE, timeout, null, (proxy, result) => {
             let reply;
@@ -267,6 +300,7 @@ export class DaemonBridge {
 
     destroy() {
         this.settingsReady = false;
+        this._initializing?.cancel();
         if (this._signalId) this._proxy.disconnect(this._signalId);
         if (this._watcherId !== null) Gio.bus_unwatch_name(this._watcherId);
         this._watcherId = null;

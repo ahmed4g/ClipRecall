@@ -24,7 +24,7 @@ fn png_bytes(width: u32, height: u32) -> Vec<u8> {
 async fn worker_renders_a_capped_png_and_marks_the_item() {
     let db = Database::open_in_memory().expect("in-memory db");
     let dir = tempfile::TempDir::new().unwrap();
-    let (worker, join) = ThumbnailWorker::new(db.clone(), dir.path().to_path_buf(), 200);
+    let (worker, join) = ThumbnailWorker::new(db.clone(), dir.path().to_path_buf());
 
     let png = png_bytes(640, 480);
     let mut p = PayloadsMap::new();
@@ -43,6 +43,8 @@ async fn worker_renders_a_capped_png_and_marks_the_item() {
 
     let path = worker.submit(&item.id, &png).await.unwrap();
     assert!(path.exists(), "the PNG must be written to the cache dir");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(path.parent().unwrap(), dir.path());
 
     let (w, h) = image::image_dimensions(&path).unwrap();
@@ -51,6 +53,14 @@ async fn worker_renders_a_capped_png_and_marks_the_item() {
     let stored = db.get_item(&item.id).unwrap().unwrap();
     assert!(stored.has_thumbnail, "the worker must set has_thumbnail");
     assert_eq!(worker.cached(&item.id), Some(path.clone()));
+    worker.queue(&item.id);
+    worker.prune_cached().await.unwrap();
+    assert!(path.exists(), "ID-only jobs load their image from storage");
+
+    db.set_setting("thumbnail_max_px", "64").unwrap();
+    worker.submit(&item.id, &png).await.unwrap();
+    let (w, h) = image::image_dimensions(&path).unwrap();
+    assert_eq!(w.max(h), 64, "the next render uses the current setting");
 
     db.set_pinned(&item.id, true).unwrap();
     let orphan = dir.path().join("already-deleted.png");
@@ -74,7 +84,7 @@ async fn worker_renders_a_capped_png_and_marks_the_item() {
 async fn non_image_payloads_are_rejected_without_crashing_the_worker() {
     let db = Database::open_in_memory().expect("in-memory db");
     let dir = tempfile::TempDir::new().unwrap();
-    let (worker, join) = ThumbnailWorker::new(db.clone(), dir.path().to_path_buf(), 200);
+    let (worker, join) = ThumbnailWorker::new(db.clone(), dir.path().to_path_buf());
 
     let err = worker.submit("nope", b"not an image").await.unwrap_err();
     println!("rejected as expected: {err}");

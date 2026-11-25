@@ -1,5 +1,5 @@
 //! Export / import (`ExportHistory`, `ImportHistory`). JSON keeps payloads so an
-//! export can be re-imported byte for byte; CSV carries metadata rows only.
+//! export can be re-imported byte for byte; CSV restores previews as plain text.
 
 use crate::crypto::HistoryKey;
 use crate::db::storage;
@@ -167,7 +167,7 @@ fn import_json(conn: &Connection, path: &Path, key: Option<&HistoryKey>) -> Resu
             "INSERT INTO items (id, content_hash, primary_mime, preview, source_app, created_at,
                                 last_used_at, pinned, has_thumbnail, size, encrypted, private_metadata)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-             ON CONFLICT(id) DO NOTHING",
+             ON CONFLICT DO NOTHING",
         )?;
         let changed = stmt.execute(params![
             entry.id,
@@ -228,23 +228,25 @@ fn import_csv(conn: &Connection, path: &Path, key: Option<&HistoryKey>) -> Resul
             "INSERT INTO items (id, content_hash, primary_mime, preview, source_app, created_at,
                                 last_used_at, pinned, has_thumbnail, size, encrypted, private_metadata)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-             ON CONFLICT(id) DO NOTHING",
+             ON CONFLICT DO NOTHING",
         )?;
         let changed = stmt.execute(params![
             fields[0],
             hash,
-            fields[1],
+            "text/plain",
             preview,
             if fields[3].is_empty() { None } else { Some(fields[3].clone()) },
             fields[4].parse::<i64>().unwrap_or(0),
             if fields[5].is_empty() { None } else { Some(fields[5].parse::<i64>().unwrap_or(0)) },
             fields[6].parse::<i64>().unwrap_or(0),
-            if key.is_none() { fields[7].parse::<i64>().unwrap_or(0) } else { 0 },
-            fields[8].parse::<i64>().unwrap_or(0),
+            false,
+            fields[2].len() as i64,
             key.is_some(),
             private,
         ])?;
         if changed > 0 {
+            let payloads = PayloadsMap::from([("text/plain".to_string(), fields[2].as_bytes().to_vec())]);
+            storage::store_payloads(conn, &fields[0], &payloads, key)?;
             imported += 1;
         }
     }
@@ -354,6 +356,35 @@ mod tests {
 
         let row = storage::list(&conn2, 0, 10, "all").unwrap();
         assert_eq!(row[0].2, "a, \"b\"");
+        let restored = storage::get_payloads(&conn2, &row[0].0).unwrap();
+        assert_eq!(restored["text/plain"], row[0].2.as_bytes());
+    }
+
+    #[test]
+    fn imports_skip_hash_and_id_collisions_and_keep_new_rows() {
+        for format in ["json", "csv"] {
+            let conn = Connection::open_in_memory().unwrap();
+            crate::db::schema::initialize_database(&conn).unwrap();
+            for text in ["duplicate", "unique"] {
+                let payloads = PayloadsMap::from([("text/plain".to_string(), text.as_bytes().to_vec())]);
+                storage::insert(&conn, &payloads, "test", &Default::default()).unwrap();
+            }
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join(format!("backup.{format}"));
+            export(&conn, &path, format).unwrap();
+
+            let target = Connection::open_in_memory().unwrap();
+            crate::db::schema::initialize_database(&target).unwrap();
+            let payloads = PayloadsMap::from([("text/plain".to_string(), b"duplicate".to_vec())]);
+            storage::insert(&target, &payloads, "test", &Default::default()).unwrap();
+            assert_eq!(import(&target, &path, format).unwrap(), 1);
+            assert_eq!(import(&target, &path, format).unwrap(), 0);
+            let rows = storage::list(&target, 0, 10, "all").unwrap();
+            assert_eq!(rows.len(), 2);
+            for row in rows {
+                assert_eq!(storage::get_payloads(&target, &row.0).unwrap()["text/plain"], row.2.as_bytes());
+            }
+        }
     }
 
     #[test]

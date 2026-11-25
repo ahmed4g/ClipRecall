@@ -18,12 +18,11 @@ const PASTE_MODIFIERS = Clutter.ModifierType.MOD1_MASK | Clutter.ModifierType.CO
     Clutter.ModifierType.SHIFT_MASK | Clutter.ModifierType.MOD4_MASK | Clutter.ModifierType.SUPER_MASK |
     Clutter.ModifierType.HYPER_MASK | Clutter.ModifierType.META_MASK;
 
-// Phase 3: the ingest path. Filter (paused, exclusion, password manager hints)
-// -> debounce -> bounded selection transfer -> fire-and-forget SubmitItem with GLib.Bytes
-// straight into the variant (zero-copy, no Array.from). The popup lands in
-// Phase 4; nothing here logs clipboard content.
+// Capture filters sensitive and excluded copies, debounces changes, and transfers
+// bounded payloads to the daemon. Clipboard contents are never logged.
 export default class ClipboardManagerExtension extends Extension {
     enable() {
+        this._pasteTimeoutId = 0;
         this._settings = this.getSettings();
         this._capture = new Gio.Cancellable();
         this._clipboardRevision = 0;
@@ -40,7 +39,7 @@ export default class ClipboardManagerExtension extends Extension {
                 this._syncIndicator();
             },
         });
-        this._ignoreNext = false;
+        this._ownSource = null;
         this._pauseRequest = null;
 
         this._debouncer = new Debouncer(
@@ -109,6 +108,8 @@ export default class ClipboardManagerExtension extends Extension {
     }
 
     disable() {
+        if (this._pasteTimeoutId) GLib.source_remove(this._pasteTimeoutId);
+        this._pasteTimeoutId = 0;
         if (this._ownerChangedId) {
             global.display.get_selection().disconnect(this._ownerChangedId);
             this._ownerChangedId = null;
@@ -119,6 +120,7 @@ export default class ClipboardManagerExtension extends Extension {
         this._popup = null;
         this._capture.cancel();
         this._pasteKeyboard = null;
+        this._ownSource = null;
         if (this._debouncer) this._debouncer.cancel();
         if (this._keybindingAction !== null) {
             // The allow-list entry is removed through Main.wm, which is what put it there.
@@ -149,10 +151,6 @@ export default class ClipboardManagerExtension extends Extension {
         });
     }
 
-    armIgnoreNext() {
-        this._ignoreNext = true;
-    }
-
     _restoreOwner(row, richText, pasteTarget) {
         const originalRevision = this._clipboardRevision;
         const bridge = this._bridge;
@@ -177,12 +175,12 @@ export default class ClipboardManagerExtension extends Extension {
             const source = Meta.SelectionSourceMemory.new(offer, GLib.Bytes.new(bytes));
             // Setting the owner fires owner-changed, which is our own write and must not
             // be recorded as a copy.
-            this.armIgnoreNext();
+            this._ownSource = source;
             try {
                 selection.set_owner(Meta.SelectionType.SELECTION_CLIPBOARD, source);
                 if (pasteTarget) this._pasteInto(pasteTarget, app, isCurrent);
             } catch (err) {
-                this._ignoreNext = false;
+                this._ownSource = null;
                 throw err;
             }
         };
@@ -202,15 +200,20 @@ export default class ClipboardManagerExtension extends Extension {
             Main.notify('Clipboard Manager', 'Copied to clipboard. Use Paste in this app.');
             return;
         }
+        if (this._pasteTimeoutId) GLib.source_remove(this._pasteTimeoutId);
+        this._pasteTimeoutId = 0;
         const revision = this._clipboardRevision;
         const deadline = GLib.get_monotonic_time() + 500_000;
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 15, () => {
+        this._pasteTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 15, () => {
             if (!isCurrent() || this._clipboardRevision !== revision || this._popup?.isOpen ||
                 global.display.get_focus_window() !== target || Main.actionMode !== Shell.ActionMode.NORMAL ||
-                GLib.get_monotonic_time() >= deadline)
+                GLib.get_monotonic_time() >= deadline) {
+                this._pasteTimeoutId = 0;
                 return GLib.SOURCE_REMOVE;
+            }
             if (global.get_pointer()[2] & PASTE_MODIFIERS) return GLib.SOURCE_CONTINUE;
 
+            this._pasteTimeoutId = 0;
             const seat = global.stage.context.get_backend().get_default_seat();
             // Mutter dispatches these events on its input thread. Retain the
             // virtual device instead of disposing it while events are queued.
@@ -233,10 +236,8 @@ export default class ClipboardManagerExtension extends Extension {
         // A replaced or disconnected owner invalidates every outstanding MIME read.
         this._cancelCapture();
         if (!source || !this._bridge) return;
-        if (this._ignoreNext) {
-            this._ignoreNext = false;
-            return;
-        }
+        if (source === this._ownSource) return;
+        this._ownSource = null;
         if (!this._canCapture(this._bridge)) return;
 
         const mimes = source.get_mimetypes();

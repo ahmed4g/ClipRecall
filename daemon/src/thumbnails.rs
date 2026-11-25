@@ -8,7 +8,7 @@ use crate::db::Database;
 use crate::types::DaemonError;
 use image::{ImageFormat, ImageReader};
 use std::ffi::OsStr;
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
@@ -16,7 +16,7 @@ use tracing::{info, warn};
 enum Job {
     Render {
         item_id: String,
-        bytes: Vec<u8>,
+        bytes: Option<Vec<u8>>,
         reply: Option<oneshot::Sender<Result<PathBuf, DaemonError>>>,
     },
     Prune(oneshot::Sender<Result<(), DaemonError>>),
@@ -30,15 +30,14 @@ enum Job {
 pub struct ThumbnailWorker {
     tx: mpsc::UnboundedSender<Job>,
     cache_dir: PathBuf,
-    max_px: u32,
 }
 
 impl ThumbnailWorker {
     /// Creates the handle and starts the worker loop task.
-    pub fn new(db: Database, cache_dir: PathBuf, max_px: u32) -> (Self, tokio::task::JoinHandle<()>) {
+    pub fn new(db: Database, cache_dir: PathBuf) -> (Self, tokio::task::JoinHandle<()>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let worker = Self { tx, cache_dir, max_px };
-        let join = tokio::spawn(run(rx, db, worker.cache_dir.clone(), worker.max_px));
+        let worker = Self { tx, cache_dir };
+        let join = tokio::spawn(run(rx, db, worker.cache_dir.clone()));
         (worker, join)
     }
 
@@ -51,8 +50,8 @@ impl ThumbnailWorker {
     }
 
     /// Fire-and-forget for the ingest hot path: the caller must not wait for the render.
-    pub fn queue(&self, item_id: &str, bytes: &[u8]) {
-        if let Err(err) = self.send(item_id, bytes, None) {
+    pub fn queue(&self, item_id: &str) {
+        if let Err(err) = self.send(item_id, &[], None) {
             warn!("Thumbnail job not queued: {err}");
         }
     }
@@ -69,7 +68,7 @@ impl ThumbnailWorker {
         self.tx
             .send(Job::Render {
                 item_id: item_id.to_string(),
-                bytes: bytes.to_vec(),
+                bytes: reply.as_ref().map(|_| bytes.to_vec()),
                 reply,
             })
             .map_err(|_| DaemonError::Internal("thumbnail worker stopped".to_string()))
@@ -101,7 +100,7 @@ impl ThumbnailWorker {
     }
 }
 
-async fn run(mut rx: mpsc::UnboundedReceiver<Job>, db: Database, cache_dir: PathBuf, max_px: u32) {
+async fn run(mut rx: mpsc::UnboundedReceiver<Job>, db: Database, cache_dir: PathBuf) {
     while let Some(job) = rx.recv().await {
         let (item_id, bytes, reply) = match job {
             Job::Render { item_id, bytes, reply } => (item_id, bytes, reply),
@@ -119,7 +118,15 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Job>, db: Database, cache_dir: Path
         let dir = cache_dir.clone();
 
         let joined = tokio::task::spawn_blocking(move || {
-            let png = render(&bytes, max_px)?;
+            let bytes = match bytes {
+                Some(bytes) => bytes,
+                None => {
+                    let item = db.get_item(&item_id)?
+                        .ok_or_else(|| DaemonError::NotFound(format!("item {item_id} not found")))?;
+                    db.get_content(&item_id, &item.primary_mime)?.1
+                }
+            };
+            let png = render(&bytes, db.config().thumbnail_max_px.max(1) as u32)?;
             let Some(item) = db.get_item(&item_id)? else {
                 return Err(DaemonError::NotFound(format!("item {item_id} not found")));
             };
@@ -128,7 +135,9 @@ async fn run(mut rx: mpsc::UnboundedReceiver<Job>, db: Database, cache_dir: Path
             }
             std::fs::create_dir_all(&dir)?;
             let path = dir.join(format!("{item_id}.png"));
-            std::fs::write(&path, &png)?;
+            let mut file = tempfile::NamedTempFile::new_in(&dir)?;
+            file.write_all(&png)?;
+            file.persist(&path).map_err(|err| err.error)?;
             db.set_has_thumbnail(&item_id)?;
             Ok(path)
         })

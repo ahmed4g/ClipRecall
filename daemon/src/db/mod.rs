@@ -7,7 +7,7 @@ use crate::crypto::HistoryKey;
 use crate::types::{ContentRow, DaemonError, HistoryRow, ItemMetadata, PayloadsMap};
 use rusqlite::{Connection, OptionalExtension, Result as SqlResult};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use tracing::info;
 
@@ -27,8 +27,16 @@ pub struct Database {
     read: Arc<Mutex<Connection>>,
     db_path: Option<PathBuf>,
     config: Arc<RwLock<Config>>,
-    busy: Arc<AtomicBool>,
+    busy: Arc<AtomicUsize>,
     history_key: Arc<RwLock<Option<Arc<HistoryKey>>>>,
+}
+
+struct BusyGuard(Arc<AtomicUsize>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl Database {
@@ -52,7 +60,7 @@ impl Database {
             read: Arc::new(Mutex::new(read)),
             db_path: Some(p.to_path_buf()),
             config: Arc::new(RwLock::new(config)),
-            busy: Arc::new(AtomicBool::new(false)),
+            busy: Arc::new(AtomicUsize::new(0)),
             history_key: Arc::new(RwLock::new(None)),
         })
     }
@@ -67,7 +75,7 @@ impl Database {
             write: shared,
             db_path: None,
             config: Arc::new(RwLock::new(config)),
-            busy: Arc::new(AtomicBool::new(false)),
+            busy: Arc::new(AtomicUsize::new(0)),
             history_key: Arc::new(RwLock::new(None)),
         })
     }
@@ -87,7 +95,7 @@ impl Database {
 
     /// True while a storage operation is executing on the blocking pool.
     pub fn is_busy(&self) -> bool {
-        self.busy.load(Ordering::Relaxed)
+        self.busy.load(Ordering::Relaxed) > 0
     }
 
     pub fn item_count(&self) -> Result<u32, DaemonError> {
@@ -292,9 +300,12 @@ impl Database {
     {
         let db = self.clone();
         let busy = self.busy.clone();
-        busy.store(true, Ordering::Relaxed);
-        let joined = tokio::task::spawn_blocking(move || f(&db)).await;
-        busy.store(false, Ordering::Relaxed);
+        busy.fetch_add(1, Ordering::Relaxed);
+        let guard = BusyGuard(busy);
+        let joined = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            f(&db)
+        }).await;
         match joined {
             Ok(result) => result,
             Err(err) => Err(DaemonError::Internal(format!("storage worker panicked: {err}"))),
@@ -334,6 +345,24 @@ impl Database {
 
     pub async fn get_item_async(&self, id: String) -> Result<Option<ItemMetadata>, DaemonError> {
         self.off_reactor(move |db| db.get_item(&id)).await
+    }
+
+    pub async fn search_filtered_async(
+        &self, query: String, limit: i64, filter: String,
+    ) -> Result<Vec<HistoryRow>, DaemonError> {
+        self.off_reactor(move |db| {
+            let conn = db.read.lock().unwrap();
+            let key = db.require_history_key()?;
+            storage::search_filtered(&conn, &query, limit, &filter, key.as_deref())
+        }).await
+    }
+
+    pub async fn touch_async(&self, id: String) -> Result<(), DaemonError> {
+        self.off_reactor(move |db| {
+            let conn = db.write.lock().unwrap();
+            storage::touch(&conn, &id)?;
+            Ok(())
+        }).await
     }
 
     pub async fn get_content_async(&self, id: String, mime: String) -> Result<ContentRow, DaemonError> {
@@ -444,5 +473,40 @@ mod encryption_tests {
         assert!(!reopened.config().encrypt_at_rest);
         assert_eq!(reopened.get_payloads(&item.id).unwrap(), payloads);
         assert_eq!(reopened.search("secret preview", 10).unwrap()[0].0, item.id);
+    }
+}
+
+#[cfg(test)]
+mod busy_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn busy_tracks_overlapping_work_after_caller_cancellation() {
+        let db = Database::open_in_memory().unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let slow_db = db.clone();
+        let slow = tokio::spawn(async move {
+            slow_db.off_reactor(move |_| {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            }).await
+        });
+        started_rx.await.unwrap();
+        db.get_history_async(0, 10, "all".into()).await.unwrap();
+        assert!(db.is_busy(), "the slow worker is still running");
+        slow.abort();
+        let _ = slow.await;
+        assert!(db.is_busy(), "cancellation does not stop blocking work");
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while db.is_busy() {
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        assert!(db.off_reactor::<(), _>(|_| panic!("test worker panic")).await.is_err());
+        assert!(!db.is_busy(), "panic releases the counter");
     }
 }

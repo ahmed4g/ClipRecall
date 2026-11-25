@@ -13,6 +13,12 @@
       <arg type="s" name="filter" direction="in"/>
       <arg type="a(ssstbbs)" name="rows" direction="out"/>
     </method>
+    <method name="SearchFilteredHistory">
+      <arg type="s" name="query" direction="in"/>
+      <arg type="i" name="limit" direction="in"/>
+      <arg type="s" name="filter" direction="in"/>
+      <arg type="a(ssstbbs)" name="rows" direction="out"/>
+    </method>
     <method name="SearchHistory">
       <arg type="s" name="query" direction="in"/>
       <arg type="i" name="limit" direction="in"/>

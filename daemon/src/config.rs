@@ -25,9 +25,6 @@ pub struct Config {
     pub filter_passwords: bool,
     pub filter_entropy: bool,
     pub encrypt_at_rest: bool,
-    pub paste_as_plain: bool,
-    pub auto_paste: bool,
-    pub keybinding: String,
     pub paused: bool,
 }
 
@@ -47,9 +44,6 @@ impl Config {
             filter_passwords: true,
             filter_entropy: false,
             encrypt_at_rest: false,
-            paste_as_plain: false,
-            auto_paste: true,
-            keybinding: "<Super>V".to_string(),
             paused: false,
         }
     }
@@ -79,9 +73,6 @@ impl Config {
             "filter_passwords" => self.filter_passwords = parse_bool(raw),
             "filter_entropy" => self.filter_entropy = parse_bool(raw),
             "encrypt_at_rest" => self.encrypt_at_rest = parse_bool(raw),
-            "paste_as_plain" => self.paste_as_plain = parse_bool(raw),
-            "auto_paste" => self.auto_paste = parse_bool(raw),
-            "keybinding" => self.keybinding = raw.to_string(),
             "paused" => self.paused = parse_bool(raw),
             _ => {}
         }
@@ -96,9 +87,6 @@ impl Config {
         map.insert("filter_passwords".to_string(), SettingValue::Bool(self.filter_passwords));
         map.insert("filter_entropy".to_string(), SettingValue::Bool(self.filter_entropy));
         map.insert("encrypt_at_rest".to_string(), SettingValue::Bool(self.encrypt_at_rest));
-        map.insert("paste_as_plain".to_string(), SettingValue::Bool(self.paste_as_plain));
-        map.insert("auto_paste".to_string(), SettingValue::Bool(self.auto_paste));
-        map.insert("keybinding".to_string(), SettingValue::Str(self.keybinding.clone()));
         map.insert("paused".to_string(), SettingValue::Bool(self.paused));
         map
     }
@@ -110,7 +98,7 @@ pub fn parse_raw(key: &str, raw: &str) -> SettingValue {
         "max_entries" | "retention_days" | "max_item_bytes" | "thumbnail_max_px" => {
             SettingValue::Int(parse_int(raw, 0))
         }
-        "filter_passwords" | "filter_entropy" | "encrypt_at_rest" | "paste_as_plain" | "auto_paste" | "paused" => {
+        "filter_passwords" | "filter_entropy" | "encrypt_at_rest" | "paused" => {
             SettingValue::Bool(parse_bool(raw))
         }
         _ => SettingValue::Str(raw.to_string()),
@@ -153,7 +141,6 @@ mod tests {
         assert_eq!(cfg.thumbnail_max_px, 200);
         assert!(cfg.filter_passwords);
         assert!(!cfg.filter_entropy);
-        assert_eq!(cfg.keybinding, "<Super>V");
     }
 
     #[test]
@@ -169,8 +156,9 @@ mod tests {
         let cfg = Config::load(&conn);
         assert_eq!(cfg.max_entries, 12);
         assert_eq!(cfg.retention_days, 45);
-        assert!(!cfg.auto_paste);
-        assert_eq!(cfg.keybinding, "<Super>c");
+
+        assert!(!cfg.as_map().contains_key("auto_paste"));
+        assert!(!cfg.as_map().contains_key("keybinding"));
 
         // Re-setting an existing key updates rather than duplicates.
         store_setting(&conn, "max_entries", "7").unwrap();

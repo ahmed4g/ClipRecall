@@ -64,3 +64,22 @@ gnome-extensions prefs clipboard-manager@project.local
 - **History shows locked entries.** Unlock GNOME Keyring, then reopen the popup.
 - **The popup is missing after an install or update.** Log out and back in. For a new installation,
   enable the extension with `gnome-extensions enable clipboard-manager@project.local` if needed.
+
+## Filter and import history
+
+Press **Tab** in the popup to cycle through All, Text, Image, File, and Pinned.
+Use **Shift+Tab** to cycle backwards. The label shows the active filter, which also
+applies while searching.
+
+In **Preferences → Storage**, use **Import JSON backup** to restore saved clipboard
+contents, or **Import CSV previews** to restore previews as plain text. Existing items
+are skipped.
+
+In **Preferences → General**, enable **Paste automatically on Enter or 1–9** to
+paste a selected item into the original app. Mouse selection follows this setting too.
+The app must support Ctrl+V. **Direct paste in all apps** expands application support.
+Successful payload retrieval moves the item up in history.
+
+Shortcut and paste settings are stored in GNOME GSettings. Storage limits, encryption,
+entropy filtering, and exclusions are stored by the daemon. Legacy daemon settings
+named keybinding, auto_paste, and paste_as_plain are ignored.
