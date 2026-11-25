@@ -476,14 +476,18 @@ export class Popup {
             }
             return Clutter.EVENT_PROPAGATE;
         }
-        if ((event.get_state() & SHORTCUT_MODIFIERS) !== ALT) return Clutter.EVENT_PROPAGATE;
-
+        const modifiers = event.get_state() & SHORTCUT_MODIFIERS;
         const repeat = (event.get_flags() & Clutter.EventFlags.FLAG_REPEATED) !== 0;
-        switch (keyval) {
-        case KEY.Return:
-        case KEY.KP_Enter:
-            if (!repeat) this._select(this._nav.index, false, this._pasteTarget);
+        if (keyval === KEY.Return || keyval === KEY.KP_Enter) {
+            // Handle Enter before Clutter.Text consumes it. A focused button handles its own Enter.
+            if (modifiers !== ALT && (modifiers !== 0 || global.stage.get_key_focus() instanceof St.Button))
+                return Clutter.EVENT_PROPAGATE;
+            if (!repeat) this._select(this._nav.index, false, modifiers === ALT ? this._pasteTarget : null);
             return Clutter.EVENT_STOP;
+        }
+        if (modifiers !== ALT) return Clutter.EVENT_PROPAGATE;
+
+        switch (keyval) {
         case Clutter.KEY_p:
         case Clutter.KEY_P:
             if (!repeat) this._togglePin();
@@ -530,10 +534,6 @@ export class Popup {
         if (keyval === KEY.End) {
             this._nav.end();
             this._highlight();
-            return true;
-        }
-        if (keyval === KEY.Return || keyval === KEY.KP_Enter) {
-            if (this._nav.index >= 0) this._select(this._nav.index);
             return true;
         }
         // Digits are not handled here: Clutter.Text consumes printable keys before this handler

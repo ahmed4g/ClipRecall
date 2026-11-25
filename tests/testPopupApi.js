@@ -168,7 +168,8 @@ check(/this\.close\(\);\s*\n\s*this\._onSelect\(row, richText, pasteTarget\);/.t
 check(/_workAreaForPoint\(anchor\?\.x \?\? px, anchor\?\.y \?\? py\)/.test(popupSrc) &&
       /anchor \? anchor\.x - POPUP_WIDTH \/ 2 : px/.test(popupSrc),
     'indicator placement centers over the anchor and keyboard placement still uses the pointer');
-check(/if \(\(event\.get_state\(\) & SHORTCUT_MODIFIERS\) !== ALT\) return Clutter\.EVENT_PROPAGATE;/.test(popupSrc),
+check(/const modifiers = event\.get_state\(\) & SHORTCUT_MODIFIERS;/.test(popupSrc) &&
+      /if \(modifiers !== ALT\) return Clutter\.EVENT_PROPAGATE;\s*switch \(keyval\)/.test(popupSrc),
     'item-action shortcuts leave bare letters and normal Backspace edits to the search entry');
 check(/if \(row\.pinned\) \{[\s\S]*?return;[\s\S]*?deleteItem\(row\.id, false, done\)/.test(popupSrc),
     'the popup protects pinned rows and never forces single-item deletion');
